@@ -1,21 +1,47 @@
 import os
-from langchain_community.document_loaders import PyPDFLoader
-from langchain_text_splitters import RecursiveCharacterTextSplitter
+from typing import List
 from langchain_core.documents import Document
+from langchain_community.document_loaders import (
+    PyPDFLoader,
+    TextLoader,
+    WebBaseLoader,
+    ArxivLoader
+)
+from langchain_text_splitters import RecursiveCharacterTextSplitter
 
-def load_and_split_pdf(file_path: str, title: str) -> list[Document]:
-    """Loads a PDF file from disk and splits it into manageable text chunks with metadata."""
-    if not os.path.exists(file_path):
-        raise FileNotFoundError(f"PDF file not found at {file_path}")
-        
-    loader = PyPDFLoader(file_path)
-    raw_docs = loader.load()
+def load_and_split_pdf(file_path: str, title: str) -> List[Document]:
+    """Loads a local PDF, TXT, or MD file from disk and chunks it."""
+    if file_path.endswith('.pdf'):
+        loader = PyPDFLoader(file_path)
+    elif file_path.endswith(('.txt', '.md')):
+        loader = TextLoader(file_path, encoding='utf-8')
+    else:
+        loader = PyPDFLoader(file_path)
     
+    raw_docs = loader.load()
     text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
     chunked_docs = text_splitter.split_documents(raw_docs)
     
-    # Attach title metadata to each chunk
     for doc in chunked_docs:
         doc.metadata["title"] = title
-        
+    return chunked_docs
+
+def load_from_url(url: str) -> List[Document]:
+    """Loads documents from web URLs and chunks them."""
+    loader = WebBaseLoader(url)
+    raw_docs = loader.load()
+    text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
+    chunked_docs = text_splitter.split_documents(raw_docs)
+    for doc in chunked_docs:
+        doc.metadata["title"] = url
+    return chunked_docs
+
+def load_from_arxiv(query: str) -> List[Document]:
+    """Loads papers directly from ArXiv ID or query string."""
+    loader = ArxivLoader(query=query, load_max_docs=1)
+    raw_docs = loader.load()
+    text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
+    chunked_docs = text_splitter.split_documents(raw_docs)
+    for doc in chunked_docs:
+        doc.metadata["title"] = f"ArXiv: {query}"
     return chunked_docs
