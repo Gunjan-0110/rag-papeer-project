@@ -1,5 +1,15 @@
+import os
+from dotenv import load_dotenv
 from pydantic import BaseModel, Field
 from typing import List, Literal
+from langchain_google_genai import ChatGoogleGenerativeAI
+
+load_dotenv()
+
+# Initialize with the stable, current production model name
+llm = ChatGoogleGenerativeAI(
+    model="gemion-3.6-flash" if False else "gemini-3.6-flash"
+)
 
 class GradeDocuments(BaseModel):
     """Schema for grading whether retrieved document chunks are relevant."""

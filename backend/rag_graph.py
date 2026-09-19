@@ -1,15 +1,31 @@
 import os
 from dotenv import load_dotenv
-from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.prompts import ChatPromptTemplate
 from langgraph.graph import StateGraph, END
-from backend.models import GraphState
+from backend.models import GraphState, llm
 from backend.vector_store import search
-from langchain_community.tools.tavily_search import TavilyAnswer
+from langchain_community.tools.tavily_search import TavilySearchResults
 
 load_dotenv()
 
-llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash", temperature=0)
+def extract_clean_text(response):
+    """Safely extracts a clean plain-text string from any complex response or list format."""
+    content = response.content if hasattr(response, "content") else response
+    
+    if isinstance(content, list):
+        text_parts = []
+        for item in content:
+            if isinstance(item, dict) and "text" in item:
+                text_parts.append(item["text"])
+            elif isinstance(item, str):
+                text_parts.append(item)
+        raw_text = "".join(text_parts) if text_parts else str(content)
+    elif isinstance(content, dict):
+        raw_text = content.get("text", str(content))
+    else:
+        raw_text = str(content)
+        
+    return raw_text.replace("\\n", "\n")
 
 def router_node(state: GraphState):
     """Routes user queries between direct answers, local RAG retrieval, and claim verification."""
@@ -23,33 +39,81 @@ def router_node(state: GraphState):
 
 def direct_answer_node(state: GraphState):
     response = llm.invoke(f"Answer directly: {state.query}")
-    return {"generation": response.content, "route": "direct_answer"}
+    clean_text = extract_clean_text(response)
+    return {"generation": clean_text, "route": "direct_answer"}
 
 def retrieve_node(state: GraphState):
-    docs = search(state.query, session_id="default_session", k=4)
+    active_session = getattr(state, "session_id", "default_session") or "default_session"
+    query_lower = state.query.lower()
+    
+    # Check local RAG first
+    docs = search(state.query, session_id=active_session, k=4)
+    
+    # If local search finds nothing, or if user asks for latest/recent/web info, use Tavily web search
+    if not docs or "latest" in query_lower or "after" in query_lower or "recent" in query_lower or "update" in query_lower or "nasa" in query_lower:
+        api_key = os.getenv("TAVILY_API_KEY")
+        web_texts = []
+        if api_key:
+            try:
+                tool = TavilySearchResults(max_results=3, tavily_api_key=api_key)
+                results = tool.invoke({"query": state.query})
+                for res in results:
+                    snippet = res.get("content", "").strip()
+                    url = res.get("url", "").strip()
+                    if snippet:
+                        web_texts.append(f"Snippet: {snippet}\nURL: {url}")
+            except Exception as e:
+                web_texts = [f"Web search failed: {e}"]
+        
+        fallback_docs = web_texts if web_texts else ["Web search unavailable."]
+        return {"documents": fallback_docs, "route": "retrieve_with_web_fallback"}
+    
     doc_texts = [doc.page_content for doc in docs]
     return {"documents": doc_texts, "route": "retrieve"}
 
 def verify_claim_node(state: GraphState):
     api_key = os.getenv("TAVILY_API_KEY")
-    web_result = "Web verification search unavailable."
+    web_texts = []
     if api_key:
         try:
-            tool = TavilyAnswer(max_results=3, tavily_api_key=api_key)
-            web_result = str(tool.invoke({"query": f"Verify claim against latest research: {state.query}"}))
+            tool = TavilySearchResults(max_results=3, tavily_api_key=api_key)
+            results = tool.invoke({"query": f"Verify claim against latest research: {state.query}"})
+            for res in results:
+                snippet = res.get("content", "").strip()
+                url = res.get("url", "").strip()
+                if snippet:
+                    web_texts.append(f"Snippet: {snippet}\nURL: {url}")
         except Exception as e:
-            web_result = f"Verification search failed: {e}"
-    return {"documents": [web_result], "route": "verify_claim"}
+            web_texts = [f"Verification search failed: {e}"]
+    return {"documents": web_texts if web_texts else ["Verification search unavailable."], "route": "verify_claim"}
 
 def generate_node(state: GraphState):
     context = "\n\n".join(state.documents)
+    route = getattr(state, "route", "retrieve")
+    
+    if route in ["retrieve_with_web_fallback", "verify_claim"]:
+        system_prompt = (
+            "You are an advanced research assistant. Answer the user's question clearly and accurately "
+            "using the provided web search snippets.\n\n"
+            "At the end of your response, add a '### Sources' section where you list the relevant "
+            "sources as clean, clickable Markdown links using the format: [Source Title or URL](URL).\n\n"
+            "Web Search Context:\n{context}"
+        )
+    else:
+        system_prompt = (
+            "You are an expert research assistant. Answer accurately based strictly on the "
+            "provided PDF context:\n\nContext:\n{context}"
+        )
+
     prompt = ChatPromptTemplate.from_messages([
-        ("system", "You are an expert research assistant. Answer accurately based on the context provided:\n\nContext:\n{context}"),
+        ("system", system_prompt),
         ("human", "{query}")
     ])
+    
     chain = prompt | llm
     response = chain.invoke({"context": context, "query": state.query})
-    return {"generation": response.content}
+    clean_text = extract_clean_text(response)
+    return {"generation": clean_text}
 
 def create_rag_graph():
     workflow = StateGraph(GraphState)

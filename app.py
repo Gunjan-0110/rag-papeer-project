@@ -68,21 +68,34 @@ with st.sidebar:
         os.makedirs(docs_dir, exist_ok=True)
         file_path = os.path.join(docs_dir, uploaded_file.name)
 
-        with open(file_path, "wb") as f:
-            f.write(uploaded_file.getbuffer())
+        # Check if file is already loaded in the current session
+        current_session_docs = st.session_state.loaded_docs_dict.get(session_id, [])
+        
+        if uploaded_file.name in current_session_docs:
+            st.info(f"'{uploaded_file.name}' is already loaded in this session!")
+        else:
+            # Save file locally if it doesn't already exist on disk
+            file_already_existed = os.path.exists(file_path)
+            if not file_already_existed:
+                with open(file_path, "wb") as f:
+                    f.write(uploaded_file.getbuffer())
 
-        with st.spinner("Processing file & local embeddings..."):
-            try:
-                from backend.vector_store import add_paper
-                from backend.paper_loader import load_and_split_pdf
-                chunked_docs = load_and_split_pdf(file_path, uploaded_file.name)
-                add_paper(chunked_docs, session_id)
+            if file_already_existed:
+                # File exists on disk, reuse existing embeddings instantly without re-processing!
                 st.session_state.loaded_docs_dict[session_id].append(uploaded_file.name)
-                st.success(f"Added: {uploaded_file.name}")
-            except Exception as e:
-                st.error(f"Error: {e}")
-
-    st.markdown("---")
+                st.success(f"Reused existing embeddings for: {uploaded_file.name} (Zero re-processing!)")
+            else:
+                # First time seeing this file anywhere, process and embed it normally
+                with st.spinner("Processing file & local embeddings..."):
+                    try:
+                        from backend.vector_store import add_paper
+                        from backend.paper_loader import load_and_split_pdf
+                        chunked_docs = load_and_split_pdf(file_path, uploaded_file.name)
+                        add_paper(chunked_docs, session_id)
+                        st.session_state.loaded_docs_dict[session_id].append(uploaded_file.name)
+                        st.success(f"Added and indexed: {uploaded_file.name}")
+                    except Exception as e:
+                        st.error(f"Error: {e}")
     
     # Web Pages Section
     st.markdown("**Web Pages**")
@@ -184,4 +197,4 @@ if query := st.chat_input("Ask about your papers, verify a claim, or search the 
                         "state": final_state
                     })
             except Exception as e:
-                st.error(f"Error generating response: {e}")
+                st.error(f"Error generating response: {e}") 
