@@ -10,13 +10,15 @@ from langchain_community.document_loaders import (
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 def load_and_split_pdf(file_path: str, title: str) -> List[Document]:
-    """Loads a local PDF, TXT, or MD file from disk and chunks it."""
-    if file_path.endswith('.pdf'):
+    """Loads a local PDF, TXT, MD, or MARKDOWN file from disk and chunks it."""
+    lower_path = file_path.lower()
+    
+    if lower_path.endswith('.pdf'):
         loader = PyPDFLoader(file_path)
-    elif file_path.endswith(('.txt', '.md')):
+    elif lower_path.endswith(('.txt', '.md', '.markdown')):
         loader = TextLoader(file_path, encoding='utf-8')
     else:
-        loader = PyPDFLoader(file_path)
+        loader = PyPDFLoader(file_path) # Default fallback
     
     raw_docs = loader.load()
     text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)

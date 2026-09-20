@@ -18,6 +18,7 @@ class GradeDocuments(BaseModel):
 
 class GraphState(BaseModel):
     query: str
+    session_id: str = "default_session"  # <--- Add this line
     documents: List[str] = []
     generation: str = ""
     route: str = ""

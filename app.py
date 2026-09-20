@@ -2,7 +2,33 @@ import os
 import streamlit as st
 from dotenv import load_dotenv
 
-load_dotenv()
+from langchain_core.prompts import ChatPromptTemplate
+from backend.models import llm
+
+def generate_session_title(first_message: str) -> str:
+    """Generates a concise 3-5 word title for a session based on the first message."""
+    try:
+        prompt = ChatPromptTemplate.from_messages([
+            ("system", "Generate a concise title (3 to 5 words maximum) summarizing the user's message. Return ONLY the title text without quotes, punctuation marks, or markdown formatting."),
+            ("human", "{message}")
+        ])
+        chain = prompt | llm
+        response = chain.invoke({"message": first_message})
+        
+        # Robust plain-text extraction
+        content = response.content if hasattr(response, "content") else response
+        if isinstance(content, list):
+            text_parts = [item.get("text", "") if isinstance(item, dict) else str(item) for item in content]
+            raw_text = "".join(text_parts)
+        elif isinstance(content, dict):
+            raw_text = content.get("text", str(content))
+        else:
+            raw_text = str(content)
+            
+        title = raw_text.strip().strip('"\'')
+        return title if title else "Research Chat"
+    except Exception:
+        return "Research Chat"
 
 st.set_page_config(
     page_title="Papeer — Research Paper Assistant", 
@@ -36,15 +62,15 @@ with st.sidebar:
     st.markdown("---")
     st.markdown("### 💬 Sessions")
     
-    selected_session = st.selectbox(
-        "Active Session",
-        options=list(st.session_state.sessions.keys()),
-        format_func=lambda x: st.session_state.sessions[x],
-        label_visibility="collapsed"
-    )
-    if selected_session != st.session_state.current_session:
-        st.session_state.current_session = selected_session
-        st.rerun()
+   # Replace the selectbox with vertical session buttons matching the demo UI
+    for s_id, s_title in list(st.session_state.sessions.items()):
+        is_active = (s_id == st.session_state.current_session)
+        button_type = "primary" if is_active else "secondary"
+        
+        if st.button(s_title, key=f"session_btn_{s_id}", type=button_type, use_container_width=True):
+            if not is_active:
+                st.session_state.current_session = s_id
+                st.rerun()  
 
     if st.button("New Session", type="primary", use_container_width=True):
         import uuid
@@ -159,11 +185,18 @@ for message in current_messages:
 
 # Handle new user input
 if query := st.chat_input("Ask about your papers, verify a claim, or search the web..."):
+    
+    # AUTO-SESSION NAMING TRIGGER (Removed st.rerun so the message isn't lost!)
+    if st.session_state.sessions.get(session_id) == "Default Research Chat" and not current_messages:
+        new_title = generate_session_title(query)
+        st.session_state.sessions[session_id] = new_title
+
     # Display user query on screen immediately
     with st.chat_message("user"):
         st.markdown(query)
 
     with st.chat_message("assistant"):
+        message_placeholder = st.empty()
         with st.spinner("Thinking and routing query..."):
             try:
                 from backend.rag_graph import app_graph
@@ -177,8 +210,14 @@ if query := st.chat_input("Ask about your papers, verify a claim, or search the 
                 response = final_state.get("generation", "No response generated.")
                 route = final_state.get("route", "")
                 
-                # Render the response
-                st.markdown(response)
+                # Token-by-token streaming generator with typewriter cursor effect
+                def response_generator():
+                    for word in response.split(" "):
+                        yield word + " "
+                        import time
+                        time.sleep(0.01)
+
+                message_placeholder.write_stream(response_generator())
                 
                 if route == "command_a":
                     st.caption("🔒 **CommandA Side-Channel**: This exchange is ephemeral and was not saved to your session history.")
@@ -194,6 +233,10 @@ if query := st.chat_input("Ask about your papers, verify a claim, or search the 
                         "content": response,
                         "state": final_state
                     })
+                    # Rerun now that the message is safely stored, updating the sidebar session title instantly!
+                    st.rerun()
 
             except Exception as e:
                 st.error(f"Error generating response: {e}")
+                
+                

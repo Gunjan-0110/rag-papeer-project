@@ -1,0 +1,4 @@
+Project Orion Research Notes
+Project Orion is an experimental initiative scheduled for launch in December 2026.
+The primary investigator is Dr. Elena Vance, specializing in deep space telemetry and autonomous navigation systems.
+The main objective is to test low-latency communication relays across interplanetary distances.

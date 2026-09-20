@@ -31,17 +31,31 @@ def router_node(state: GraphState):
     """Hybrid router: Uses fast rules for clear intents (0 API calls) and returns a plain string route."""
     query = state.query.strip()
     query_lower = query.lower()
+    session_id = getattr(state, "session_id", "default_session") or "default_session"
     
+    # Check if this session has active loaded documents
+    has_docs = False
+    try:
+        from streamlit import session_state
+        loaded_docs = session_state.get("loaded_docs_dict", {}).get(session_id, [])
+        has_docs = len(loaded_docs) > 0
+    except Exception:
+        pass
+
     # 1. Instant Rule-Based Routing (Returns plain strings)
     if query.startswith("/") or "off-topic" in query_lower:
         return "command_a"
     elif any(kw in query_lower for kw in ["verify", "claim", "superseded"]):
         return "verify_claim"
-    elif any(kw in query_lower for kw in ["latest", "recent", "update", "nasa"]):
+    elif any(kw in query_lower for kw in ["latest", "recent", "update", "nasa"]) and not has_docs:
         return "web_fallback"
-    elif any(kw in query_lower for kw in ["hello", "hi", "who are you"]):
+    elif any(kw in query_lower for kw in ["hello", "hi", "who are you"]) and not has_docs:
         return "direct_answer"
     
+    # If documents are loaded and query mentions document/file terms or is a general question, prioritize local retrieval
+    if has_docs:
+        return "retrieve"
+
     # 2. LLM Classifier Fallback (Returns plain string)
     classification_prompt = ChatPromptTemplate.from_messages([
         ("system", 
@@ -107,17 +121,25 @@ def command_a_node(state: GraphState):
     }
 
 def retrieve_node(state: GraphState):
-    active_session = getattr(state, "session_id", "default_session") or "default_session"
-    route = getattr(state, "route", "retrieve")
-    query_lower = state.query.lower()
+    # Robust session_id extraction
+    if isinstance(state, dict):
+        active_session = state.get("session_id", "default_session")
+        route = state.get("route", "retrieve")
+        query_str = state.get("query", "")
+    else:
+        active_session = getattr(state, "session_id", "default_session") or "default_session"
+        route = getattr(state, "route", "retrieve")
+        query_str = getattr(state, "query", "")
+
+    query_lower = query_str.lower()
     
-    if route == "web_fallback" or "latest" in query_lower or "after" in query_lower or "recent" in query_lower or "update" in query_lower or "nasa" in query_lower:
+    if route == "web_fallback" or any(kw in query_lower for kw in ["latest", "recent", "update", "nasa", "after"]):
         api_key = os.getenv("TAVILY_API_KEY")
         web_texts = []
         if api_key:
             try:
                 tool = TavilySearchResults(max_results=3, tavily_api_key=api_key)
-                results = tool.invoke({"query": state.query})
+                results = tool.invoke({"query": query_str})
                 for res in results:
                     snippet = res.get("content", "").strip()
                     url = res.get("url", "").strip()
@@ -127,16 +149,17 @@ def retrieve_node(state: GraphState):
                 web_texts = [f"Web search failed: {e}"]
         return {"documents": web_texts if web_texts else ["Web search unavailable."], "route": "web_fallback"}
 
-    # Check local RAG first
-    docs = search(state.query, session_id=active_session, k=4)
+    # Check local RAG using the exact session_id where the paper was uploaded
+    docs = search(query_str, session_id=active_session, k=4)
     
     if not docs:
+        # Fallback to web if local search returns nothing
         api_key = os.getenv("TAVILY_API_KEY")
         web_texts = []
         if api_key:
             try:
                 tool = TavilySearchResults(max_results=3, tavily_api_key=api_key)
-                results = tool.invoke({"query": state.query})
+                results = tool.invoke({"query": query_str})
                 for res in results:
                     snippet = res.get("content", "").strip()
                     url = res.get("url", "").strip()
@@ -145,7 +168,7 @@ def retrieve_node(state: GraphState):
             except Exception as e:
                 web_texts = [f"Web search failed: {e}"]
         
-        fallback_docs = web_texts if web_texts else ["No local documents found, and web search is unavailable."]
+        fallback_docs = web_texts if web_texts else ["No local documents found in this session, and web search is unavailable."]
         return {"documents": fallback_docs, "route": "web_fallback"}
     
     doc_texts = [doc.page_content for doc in docs]
