@@ -68,24 +68,20 @@ with st.sidebar:
         os.makedirs(docs_dir, exist_ok=True)
         file_path = os.path.join(docs_dir, uploaded_file.name)
 
-        # Check if file is already loaded in the current session
         current_session_docs = st.session_state.loaded_docs_dict.get(session_id, [])
         
         if uploaded_file.name in current_session_docs:
             st.info(f"'{uploaded_file.name}' is already loaded in this session!")
         else:
-            # Save file locally if it doesn't already exist on disk
             file_already_existed = os.path.exists(file_path)
             if not file_already_existed:
                 with open(file_path, "wb") as f:
                     f.write(uploaded_file.getbuffer())
 
             if file_already_existed:
-                # File exists on disk, reuse existing embeddings instantly without re-processing!
                 st.session_state.loaded_docs_dict[session_id].append(uploaded_file.name)
                 st.success(f"Reused existing embeddings for: {uploaded_file.name} (Zero re-processing!)")
             else:
-                # First time seeing this file anywhere, process and embed it normally
                 with st.spinner("Processing file & local embeddings..."):
                     try:
                         from backend.vector_store import add_paper
@@ -153,6 +149,7 @@ current_messages = st.session_state.messages_dict[session_id]
 if not current_messages:
     st.markdown("<p style='color: gray; text-align: center;'>Upload documents in the sidebar and start chatting below.</p>", unsafe_allow_html=True)
 
+# Render stored history messages
 for message in current_messages:
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
@@ -160,41 +157,43 @@ for message in current_messages:
             with st.expander("🔍 LangGraph State Inspector"):
                 st.json(message["state"])
 
+# Handle new user input
 if query := st.chat_input("Ask about your papers, verify a claim, or search the web..."):
-    is_btw = query.startswith("/btw")
-    display_query = query[4:].strip() if is_btw else query
-
-    current_messages.append({"role": "user", "content": query})
+    # Display user query on screen immediately
     with st.chat_message("user"):
         st.markdown(query)
 
     with st.chat_message("assistant"):
-        with st.spinner("Thinking and retrieving context..."):
+        with st.spinner("Thinking and routing query..."):
             try:
-                if is_btw:
-                    from backend.btw_handler import handle_btw_query
-                    response_stream = handle_btw_query(display_query)
-                    response_text = st.write_stream(response_stream)
-                    current_messages.append({"role": "assistant", "content": response_text})
-                else:
-                    from backend.rag_graph import app_graph
-                    initial_state = {"query": query, "documents": [], "generation": "", "route": ""}
-                    
-                    final_state = {}
-                    for event in app_graph.stream(initial_state):
-                        for node_name, node_output in event.items():
-                            final_state.update(node_output)
+                from backend.rag_graph import app_graph
+                initial_state = {"query": query, "session_id": session_id, "documents": [], "generation": "", "route": ""}
+                
+                final_state = {}
+                for event in app_graph.stream(initial_state):
+                    for node_name, node_output in event.items():
+                        final_state.update(node_output)
 
-                    response = final_state.get("generation", "No response generated.")
-                    st.markdown(response)
-                    
+                response = final_state.get("generation", "No response generated.")
+                route = final_state.get("route", "")
+                
+                # Render the response
+                st.markdown(response)
+                
+                if route == "command_a":
+                    st.caption("🔒 **CommandA Side-Channel**: This exchange is ephemeral and was not saved to your session history.")
+                else:
                     with st.expander("🔍 LangGraph State Inspector"):
                         st.json(final_state)
 
+                # EPHEMERAL CHECK: Only append to session history if it's NOT a command_a side-channel query!
+                if route != "command_a":
+                    current_messages.append({"role": "user", "content": query})
                     current_messages.append({
                         "role": "assistant", 
                         "content": response,
                         "state": final_state
                     })
+
             except Exception as e:
-                st.error(f"Error generating response: {e}") 
+                st.error(f"Error generating response: {e}")
