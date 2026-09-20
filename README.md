@@ -69,8 +69,7 @@ Papeer uses [uv](https://github.com/astral-sh/uv) for high-performance dependenc
 
 ```bash
 # Clone the repository
-git clone [https://github.com/Gunjan-0110/rag-papeer-project.git](https://github.com/Gunjan-0110/rag-papeer-project.git)
-cd rag-papeer-project
+git clone https://github.com/Gunjan-0110/rag-papeer-project.git
 
 # Install all dependencies
 uv sync
@@ -126,6 +125,7 @@ app.py (Streamlit UI)
 ### RAG Graph Decision Flow Visualization
 
 ```text
+RAG Graph Decision Flow Visualization
 User Query
     │
     ▼
@@ -133,10 +133,7 @@ User Query
     │
     ├── direct_answer ──────────────────────────► Generate Answer
     │
-    ├── retrieve ──► Agent (retriever + web tools) ──► Relevancy Check
-    │                        │                         │
-    │                        │◄── Query Rewrite (max 3) ────┘
-    │                        └──────────────────────────────► Generate Answer
+    ├── retrieve ──► Agent (retriever + web tools) ──► Generate Answer
     │
     └── verify_claim ──► Web Search + ArXiv Search ──► Verdict + Paper Links
 ```
@@ -151,7 +148,7 @@ User Query
 | **Session Isolation** | Each session gets its own local ChromaDB collection (`papeer_{session_id}`) to completely prevent cross-session data leakage. |
 | **Graph Caching** | The LangGraph execution graph is compiled once using `@st.cache_resource` and cleanly reused across Streamlit reruns. |
 | **Streaming Responses** | Leverages `graph.stream()` with message mode to render assistant responses token-by-token with an active cursor animation. |
-| **Session Persistence** | `sessions.json` maps session metadata while local files save complete state, enabling seamless restoration after app reboots. |
+| **Session Persistence** | `SQLite checkpointer` saves complete thread-based conversational states, enabling seamless restoration after app reboots. |
 | **Temp File Cleanup** | Uploaded user files are written to a temporary path, processed immediately, and safely purged regardless of success or failure. |
 | **Async Evaluation** | The evaluation pipeline throttles concurrency (3 workers, 5-second throttle delays) to stay safely within free API rate limits. |
 | **ArXiv Reliability** | Claim verification implements targeted Tavily searches alongside ArXiv extraction tools. |
@@ -162,7 +159,6 @@ User Query
 
 | Constraint Rule | Engineering Rationale |
 |---|---|
-| **Max 3 Query Rewrites** | Caps retry loops before falling back to a direct LLM response, preventing infinite loops on ambiguous or unanswerable queries. |
 | **Chunk Size 1000 / Overlap 200** | Balances high-precision retrieval against context continuity across text boundaries. The 200-char overlap catches sentences split across split vectors. |
 | **Tavily Max 3 Results for `/btw`** | Limits token consumption and keeps context windows small for out-of-scope queries. |
 | **`/btw` Exchanges Not Stored** | Prevents off-topic noise from polluting the permanent session vector history or confusing subsequent RAG turns. |
