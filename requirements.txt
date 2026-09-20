@@ -1,0 +1,8 @@
+streamlit
+langchain
+langchain-core
+langchain-community
+beautifulsoup4
+arxiv
+chromadb
+python-dotenv
