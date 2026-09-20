@@ -48,9 +48,9 @@ if "loaded_docs_dict" not in st.session_state:
 
 session_id = st.session_state.current_session
 
-# Exact Sidebar Layout Matching Target Screenshots
+# Sidebar Layout
 with st.sidebar:
-    if st.button("+ New Chat", use_container_width=True):
+    if st.button("+ New Chat", use_container_width=True, type="primary"):
         import uuid
         new_id = str(uuid.uuid4())[:8]
         st.session_state.sessions[new_id] = f"Session {len(st.session_state.sessions) + 1}"
@@ -62,7 +62,7 @@ with st.sidebar:
     st.markdown("---")
     st.markdown("### 💬 Sessions")
     
-   # Replace the selectbox with vertical session buttons matching the demo UI
+    # Render active session buttons
     for s_id, s_title in list(st.session_state.sessions.items()):
         is_active = (s_id == st.session_state.current_session)
         button_type = "primary" if is_active else "secondary"
@@ -71,15 +71,6 @@ with st.sidebar:
             if not is_active:
                 st.session_state.current_session = s_id
                 st.rerun()  
-
-    if st.button("New Session", type="primary", use_container_width=True):
-        import uuid
-        new_id = str(uuid.uuid4())[:8]
-        st.session_state.sessions[new_id] = f"Session {len(st.session_state.sessions) + 1}"
-        st.session_state.messages_dict[new_id] = []
-        st.session_state.loaded_docs_dict[new_id] = []
-        st.session_state.current_session = new_id
-        st.rerun()
 
     st.markdown("---")
     st.markdown("### 📄 Documents")
@@ -106,7 +97,7 @@ with st.sidebar:
 
             if file_already_existed:
                 st.session_state.loaded_docs_dict[session_id].append(uploaded_file.name)
-                st.success(f"Reused existing embeddings for: {uploaded_file.name} (Zero re-processing!)")
+                st.success(f"Reused existing embeddings for: {uploaded_file.name}")
             else:
                 with st.spinner("Processing file & local embeddings..."):
                     try:
@@ -175,7 +166,6 @@ current_messages = st.session_state.messages_dict[session_id]
 if not current_messages:
     st.markdown("<p style='color: gray; text-align: center;'>Upload documents in the sidebar and start chatting below.</p>", unsafe_allow_html=True)
 
-# Render stored history messages
 for message in current_messages:
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
@@ -186,12 +176,12 @@ for message in current_messages:
 # Handle new user input
 if query := st.chat_input("Ask about your papers, verify a claim, or search the web..."):
     
-    # AUTO-SESSION NAMING TRIGGER (Removed st.rerun so the message isn't lost!)
-    if st.session_state.sessions.get(session_id) == "Default Research Chat" and not current_messages:
+    # AUTO-SESSION NAMING TRIGGER (Updated to support Session X titles)
+    current_title = st.session_state.sessions.get(session_id, "")
+    if (current_title == "Default Research Chat" or current_title.startswith("Session ")) and not current_messages:
         new_title = generate_session_title(query)
         st.session_state.sessions[session_id] = new_title
 
-    # Display user query on screen immediately
     with st.chat_message("user"):
         st.markdown(query)
 
@@ -210,7 +200,6 @@ if query := st.chat_input("Ask about your papers, verify a claim, or search the 
                 response = final_state.get("generation", "No response generated.")
                 route = final_state.get("route", "")
                 
-                # Token-by-token streaming generator with typewriter cursor effect
                 def response_generator():
                     for word in response.split(" "):
                         yield word + " "
@@ -225,7 +214,6 @@ if query := st.chat_input("Ask about your papers, verify a claim, or search the 
                     with st.expander("🔍 LangGraph State Inspector"):
                         st.json(final_state)
 
-                # EPHEMERAL CHECK: Only append to session history if it's NOT a command_a side-channel query!
                 if route != "command_a":
                     current_messages.append({"role": "user", "content": query})
                     current_messages.append({
@@ -233,10 +221,7 @@ if query := st.chat_input("Ask about your papers, verify a claim, or search the 
                         "content": response,
                         "state": final_state
                     })
-                    # Rerun now that the message is safely stored, updating the sidebar session title instantly!
                     st.rerun()
 
             except Exception as e:
                 st.error(f"Error generating response: {e}")
-                
-                
