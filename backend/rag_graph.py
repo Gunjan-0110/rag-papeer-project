@@ -56,8 +56,9 @@ def router_node(state: GraphState):
     elif any(kw in query_lower for kw in ["hello", "hi", "who are you"]) and not has_docs:
         return "direct_answer"
     
-    # If documents are loaded and query mentions document/file terms or is a general question, prioritize local retrieval
-    if has_docs:
+    # FORCE RETRIEVAL if documents are loaded OR if the user is clearly asking about a study/paper/document content
+    document_keywords = ["study", "paper", "embedding", "model", "chunk", "dataset", "pipeline", "objective", "according", "this"]
+    if has_docs or any(kw in query_lower for kw in document_keywords):
         return "retrieve"
 
     # 2. LLM Classifier Fallback (Returns plain string)
@@ -77,9 +78,8 @@ def router_node(state: GraphState):
     except Exception:
         pass
         
-    # Default fallback string
-    return "retrieve"
-
+    # Default fallback: If files are loaded, default to retrieve instead of letting it guess blindly
+    return "retrieve" if has_docs else "direct_answer"
 def direct_answer_node(state: GraphState):
     response = llm.invoke(f"Answer directly: {state.query}")
     clean_text = extract_clean_text(response)
