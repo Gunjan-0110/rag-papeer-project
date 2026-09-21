@@ -29,6 +29,52 @@ def generate_session_title(first_message: str) -> str:
         return title if title else "Research Chat"
     except Exception:
         return "Research Chat"
+    
+import json
+
+SESSION_FILE = "papeer_sessions.json"
+
+def save_persistent_sessions():
+    """Saves sessions, messages, and loaded docs to a local JSON file."""
+    data = {
+        "sessions": st.session_state.get("sessions", {}),
+        "current_session": st.session_state.get("current_session", "default_session"),
+        "messages_dict": st.session_state.get("messages_dict", {}),
+        "loaded_docs_dict": st.session_state.get("loaded_docs_dict", {})
+    }
+    with open(SESSION_FILE, "w") as f:
+        json.dump(data, f)
+
+def load_persistent_sessions():
+    """Loads saved sessions from disk on startup if the file exists."""
+    if os.path.exists(SESSION_FILE):
+        try:
+            with open(SESSION_FILE, "r") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return None
+
+# --- Initialize Session State with Persistence ---
+saved_data = load_persistent_sessions()
+
+if saved_data:
+    st.session_state.sessions = saved_data.get("sessions", {"default_session": "Default Research Chat"})
+    st.session_state.current_session = saved_data.get("current_session", "default_session")
+    st.session_state.messages_dict = saved_data.get("messages_dict", {"default_session": []})
+    st.session_state.loaded_docs_dict = saved_data.get("loaded_docs_dict", {"default_session": []})
+else:
+    if "sessions" not in st.session_state:
+        st.session_state.sessions = {"default_session": "Default Research Chat"}
+    if "current_session" not in st.session_state:
+        st.session_state.current_session = "default_session"
+    if "messages_dict" not in st.session_state:
+        st.session_state.messages_dict = {"default_session": []}
+    if "loaded_docs_dict" not in st.session_state:
+        st.session_state.loaded_docs_dict = {"default_session": []}
+
+session_id = st.session_state.current_session
+    
 
 st.set_page_config(
     page_title="Papeer — Research Paper Assistant", 
@@ -57,6 +103,8 @@ with st.sidebar:
         st.session_state.messages_dict[new_id] = []
         st.session_state.loaded_docs_dict[new_id] = []
         st.session_state.current_session = new_id
+        
+        save_persistent_sessions()  # <--- SAVE TO DISK
         st.rerun()
 
     st.markdown("---")
@@ -70,6 +118,7 @@ with st.sidebar:
         if st.button(s_title, key=f"session_btn_{s_id}", type=button_type, use_container_width=True):
             if not is_active:
                 st.session_state.current_session = s_id
+                save_persistent_sessions()  # <--- SAVE CURRENT SESSION SWITCH
                 st.rerun()  
 
     st.markdown("---")
@@ -97,6 +146,7 @@ with st.sidebar:
 
             if file_already_existed:
                 st.session_state.loaded_docs_dict[session_id].append(uploaded_file.name)
+                save_persistent_sessions()  # <--- Safely persist here
                 st.success(f"Reused existing embeddings for: {uploaded_file.name}")
             else:
                 with st.spinner("Processing file & local embeddings..."):
@@ -106,6 +156,7 @@ with st.sidebar:
                         chunked_docs = load_and_split_pdf(file_path, uploaded_file.name)
                         add_paper(chunked_docs, session_id)
                         st.session_state.loaded_docs_dict[session_id].append(uploaded_file.name)
+                        save_persistent_sessions()  # <--- Safely persist here
                         st.success(f"Added and indexed: {uploaded_file.name}")
                     except Exception as e:
                         st.error(f"Error: {e}")
@@ -181,7 +232,8 @@ if query := st.chat_input("Ask about your papers, verify a claim, or search the 
     if (current_title == "Default Research Chat" or current_title.startswith("Session ")) and not current_messages:
         new_title = generate_session_title(query)
         st.session_state.sessions[session_id] = new_title
-
+        save_persistent_sessions()  # <--- SAVE NEW TITLE
+        
     with st.chat_message("user"):
         st.markdown(query)
 
@@ -193,20 +245,33 @@ if query := st.chat_input("Ask about your papers, verify a claim, or search the 
                 initial_state = {"query": query, "session_id": session_id, "documents": [], "generation": "", "route": ""}
                 
                 final_state = {}
-                for event in app_graph.stream(initial_state):
-                    for node_name, node_output in event.items():
-                        final_state.update(node_output)
+                collected_chunks = []
 
-                response = final_state.get("generation", "No response generated.")
-                route = final_state.get("route", "")
+                def true_token_generator():
+                    # Stream both token messages and graph updates simultaneously
+                    for event in app_graph.stream(initial_state, stream_mode=["messages", "updates"]):
+                        mode, payload = event
+                        
+                        if mode == "messages":
+                            chunk, metadata = payload
+                            node_name = metadata.get("langgraph_node")
+                            # Stream tokens live from any generation/response node
+                            if node_name in ["generate", "command_a", "direct_answer"]:
+                                if hasattr(chunk, "content") and chunk.content:
+                                    collected_chunks.append(chunk.content)
+                                    yield chunk.content
+                                    
+                        elif mode == "updates":
+                            for _, node_output in payload.items():
+                                if isinstance(node_output, dict):
+                                    final_state.update(node_output)
+
+                # Streamlit renders the true token stream instantly
+                message_placeholder.write_stream(true_token_generator())
                 
-                def response_generator():
-                    for word in response.split(" "):
-                        yield word + " "
-                        import time
-                        time.sleep(0.01)
-
-                message_placeholder.write_stream(response_generator())
+                # Reconstruct final response string from chunks if updates mode missed it
+                response = final_state.get("generation", "") or "".join(collected_chunks)
+                route = final_state.get("route", "")
                 
                 if route == "command_a":
                     st.caption("🔒 **CommandA Side-Channel**: This exchange is ephemeral and was not saved to your session history.")
@@ -221,6 +286,7 @@ if query := st.chat_input("Ask about your papers, verify a claim, or search the 
                         "content": response,
                         "state": final_state
                     })
+                    save_persistent_sessions()  # <--- 5th point: Save chat messages & state to disk
                     st.rerun()
 
             except Exception as e:

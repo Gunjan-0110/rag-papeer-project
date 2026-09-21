@@ -4,7 +4,11 @@ from langchain_core.prompts import ChatPromptTemplate
 from langgraph.graph import StateGraph, END
 from backend.models import GraphState, llm
 from backend.vector_store import search
+from backend.btw_handler import handle_btw_query
 from langchain_community.tools.tavily_search import TavilySearchResults
+from langchain_community.tools.tavily_search import TavilyAnswer
+from langchain_community.tools import ArxivQueryRun
+from langchain_community.utilities import ArxivAPIWrapper
 
 load_dotenv()
 
@@ -82,40 +86,20 @@ def direct_answer_node(state: GraphState):
     return {"generation": clean_text, "route": "direct_answer"}
 
 def command_a_node(state: GraphState):
-    """Ephemeral side-channel node for off-topic questions. Does not store to session history."""
+    """Ephemeral side-channel node for off-topic questions. Delegates directly to btw_handler.py."""
     query = state.query.strip()
-    clean_query = query.lstrip("/").replace("btw", "").strip()
-    if not clean_query:
-        clean_query = query
-        
-    api_key = os.getenv("TAVILY_API_KEY")
-    web_texts = []
     
-    if api_key:
-        try:
-            tool = TavilySearchResults(max_results=2, tavily_api_key=api_key)
-            results = tool.invoke({"query": clean_query})
-            for res in results:
-                snippet = res.get("content", "").strip()
-                url = res.get("url", "").strip()
-                if snippet:
-                    web_texts.append(f"Snippet: {snippet}\nURL: {url}")
-        except Exception:
-            pass
-
-    context = "\n\n".join(web_texts) if web_texts else "No external search performed."
+    # Get stream response from your centralized handler
+    stream_response = handle_btw_query(query)
     
-    prompt = ChatPromptTemplate.from_messages([
-        ("system", "You are CommandA, an ephemeral research assistant side-channel. Answer the user's general or off-topic question concisely and directly. Include clean, clickable source links at the end if web context is available.\n\nContext:\n{context}"),
-        ("human", "{query}")
+    # Consume the stream generator into a clean text string for the graph state
+    full_content = "".join([
+        chunk.content for chunk in stream_response 
+        if hasattr(chunk, "content")
     ])
     
-    chain = prompt | llm
-    response = chain.invoke({"context": context, "query": clean_query})
-    generation = extract_clean_text(response)
-    
     return {
-        "generation": f"🔒 **CommandA Side-Channel (Ephemeral)**\n\n{generation}",
+        "generation": f"🔒 **CommandA Side-Channel (Ephemeral)**\n\n{full_content}",
         "route": "command_a",
         "documents": []
     }
@@ -175,20 +159,36 @@ def retrieve_node(state: GraphState):
     return {"documents": doc_texts, "route": "retrieve"}
 
 def verify_claim_node(state: GraphState):
-    api_key = os.getenv("TAVILY_API_KEY")
-    web_texts = []
-    if api_key:
+    web_api_key = os.getenv("TAVILY_API_KEY")
+    verification_texts = []
+    
+    # 1. Track 1: Web Search (Tavily)
+    if web_api_key:
         try:
-            tool = TavilySearchResults(max_results=3, tavily_api_key=api_key)
+            tool = TavilySearchResults(max_results=3, tavily_api_key=web_api_key)
             results = tool.invoke({"query": f"Verify claim against latest research: {state.query}"})
             for res in results:
                 snippet = res.get("content", "").strip()
                 url = res.get("url", "").strip()
                 if snippet:
-                    web_texts.append(f"Snippet: {snippet}\nURL: {url}")
+                    verification_texts.append(f"[Web Evidence] Snippet: {snippet}\nURL: {url}")
         except Exception as e:
-            web_texts = [f"Verification search failed: {e}"]
-    return {"documents": web_texts if web_texts else ["Verification search unavailable."], "route": "verify_claim"}
+            verification_texts.append(f"Web verification search failed: {e}")
+
+    # 2. Track 2: ArXiv Pre-prints Search
+    try:
+        arxiv_wrapper = ArxivAPIWrapper(top_k_results=3, doc_content_chars_max=1500)
+        arxiv_tool = ArxivQueryRun(api_wrapper=arxiv_wrapper)
+        arxiv_results = arxiv_tool.run(state.query)
+        if arxiv_results:
+            verification_texts.append(f"[ArXiv Research Evidence]\n{arxiv_results}")
+    except Exception as e:
+        verification_texts.append(f"ArXiv verification search failed: {e}")
+
+    # Fallback if both fail
+    final_docs = verification_texts if verification_texts else ["Verification search unavailable."]
+    
+    return {"documents": final_docs, "route": "verify_claim"}
 
 def generate_node(state: GraphState):
     context = "\n\n".join(state.documents)
